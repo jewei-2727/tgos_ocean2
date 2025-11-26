@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>梗枋 & 烏石漁港 動態水質圖示範</title>
+
+    <!-- ① TGOS MAP API-Lite（內政部提供的 AppID / APIKey） -->
+    <script type="text/javascript"
+        src="https://api.tgos.tw/TGOS_API/tgos?ver=2&AppID=x+JLVSx85Lk=&APIKey=in8W74q0ogpcfW/STwicK8D5QwCdddJf05/7nb+OtDh8R99YN3T0LurV4xato3TpL/fOfylvJ9Wv/khZEsXEWxsBmg+GEj4AuokiNXCh14Rei21U5GtJpIkO++Mq3AguFK/ISDEWn4hMzqgrkxNe1Q=="
+        charset="utf-8">
+    </script>
+
+    <!-- ② Chart.js（用來畫動態折線圖） -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        body { margin: 0; }
+        #MapDiv {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            width: 1000px;   /* 地圖大小 */
+            height: 650px;   /* 地圖大小 */
+            border: 1px solid #333;
+        }
+    </style>
+
+    <script type="text/javascript">
+        var map;  // TGOS 地圖物件
+
+        // 個別圖表物件，避免重複開啟時疊圖
+        var gfPhChart = null;
+        var gfDoChart = null;
+        var wsPhChart = null;
+        var wsDoChart = null;
+
+        // --- 初始化地圖 ---
+        function InitMap() {
+            var mapDiv = document.getElementById("MapDiv");
+
+            var mapOptions = {
+                scaleControl: false,
+                navigationControl: true,
+                navigationControlOptions: {
+                    controlPosition: TGOS.TGControlPosition.TOP_LEFT,
+                    navigationControlStyle: TGOS.TGNavigationControlStyle.SMALL
+                },
+                mapTypeControl: false
+            };
+
+            // 梗枋漁港 TWD97 座標（X, Y）
+            var gengfangPoint = new TGOS.TGPoint(337898.412, 2755463.869);
+
+            // 烏石漁港 TWD97 座標（X, Y）
+            var wushiPoint   = new TGOS.TGPoint(334485.346, 2751416.022);
+
+            // 地圖初始中心取兩港口中間附近（粗略平均）
+            var centerX = (337898.412 + 334485.346) / 2;
+            var centerY = (2755463.869 + 2751416.022) / 2;
+            var centerPoint = new TGOS.TGPoint(centerX, centerY);
+
+            // 建立 TGOS 地圖（使用 TWD97 EPSG3826）
+            map = new TGOS.TGOnlineMap(mapDiv, TGOS.TGCoordSys.EPSG3826, mapOptions);
+            map.setZoom(11);              // 比 12 再拉遠一點，方便一次看到兩個港
+            map.setCenter(centerPoint);
+
+            // 標記圖示設定
+            var iconUrl = "https://api.tgos.tw/TGOS_API/images/marker2.png";
+            var markerImg = new TGOS.TGImage(
+                iconUrl,
+                new TGOS.TGSize(38, 33),
+                new TGOS.TGPoint(0, 0),
+                new TGOS.TGPoint(10, 33)
+            );
+
+            // --- 梗枋漁港 Marker + InfoWindow ---
+            var gfMarker = new TGOS.TGMarker(map, gengfangPoint, "梗枋漁港", markerImg);
+
+            var gfHtml =
+                "<b>梗枋漁港水質時序圖</b><br>" +
+                "<small>2025 年 pH 與 DO（示範資料）</small><br><br>" +
+
+                "<div style='width:320px;height:200px;'>" +
+                "<b>pH</b><br>" +
+                "<canvas id='gf_ph_canvas' width='320' height='160'></canvas>" +
+                "</div><br>" +
+
+                "<div style='width:320px;height:200px;'>" +
+                "<b>DO（mg/L）</b><br>" +
+                "<canvas id='gf_do_canvas' width='320' height='160'></canvas>" +
+                "</div>";
+
+            var gfInfoWindow = new TGOS.TGInfoWindow(gfHtml, gengfangPoint, {
+                maxWidth: 360,
+                pixelOffset: new TGOS.TGSize(5, -30),
+                zIndex: 99
+            });
+
+            TGOS.TGEvent.addListener(gfMarker, "click", function () {
+                gfInfoWindow.open(map);
+                // 等 InfoWindow DOM 建好後再畫圖
+                setTimeout(drawGengfangChart, 200);
+            });
+
+            // --- 烏石漁港 Marker + InfoWindow ---
+            var wsMarker = new TGOS.TGMarker(map, wushiPoint, "烏石漁港", markerImg);
+
+            var wsHtml =
+                "<b>烏石漁港水質時序圖</b><br>" +
+                "<small>2025 年 pH 與 DO（示範資料）</small><br><br>" +
+
+                "<div style='width:320px;height:200px;'>" +
+                "<b>pH</b><br>" +
+                "<canvas id='ws_ph_canvas' width='320' height='160'></canvas>" +
+                "</div><br>" +
+
+                "<div style='width:320px;height:200px;'>" +
+                "<b>DO（mg/L）</b><br>" +
+                "<canvas id='ws_do_canvas' width='320' height='160'></canvas>" +
+                "</div>";
+
+            var wsInfoWindow = new TGOS.TGInfoWindow(wsHtml, wushiPoint, {
+                maxWidth: 360,
+                pixelOffset: new TGOS.TGSize(5, -30),
+                zIndex: 99
+            });
+
+            TGOS.TGEvent.addListener(wsMarker, "click", function () {
+                wsInfoWindow.open(map);
+                setTimeout(drawWushiChart, 200);
+            });
+        }
+
+        // --- 梗枋漁港：pH + DO 各一張圖 ---
+        function drawGengfangChart() {
+            // pH 畫布
+            var phCanvas = document.getElementById('gf_ph_canvas');
+            if (!phCanvas) return;
+            var phCtx = phCanvas.getContext('2d');
+
+            // DO 畫布
+            var doCanvas = document.getElementById('gf_do_canvas');
+            if (!doCanvas) return;
+            var doCtx = doCanvas.getContext('2d');
+
+            // 如果之前有圖表，先銷毀避免重疊
+            if (gfPhChart !== null) {
+                gfPhChart.destroy();
+            }
+            if (gfDoChart !== null) {
+                gfDoChart.destroy();
+            }
+
+            // X 軸日期
+            var labels = [
+                '2025/01','2025/02','2025/03','2025/04','2025/05','2025/06',
+                '2025/07','2025/08','2025/09','2025/10','2025/11','2025/12'
+            ];
+
+            // pH 假資料（梗枋）
+            var phData = [7.9, 8.0, 7.8, 7.7, 7.6, 7.5, 7.6, 7.7, 7.8, 7.9, 8.0, 7.9];
+
+            // DO 假資料（梗枋，4.0–5.5 mg/L）
+            var doData = [5.2, 5.1, 4.9, 4.7, 4.5, 4.3, 4.4, 4.6, 4.8, 5.0, 5.3, 5.4];
+
+            // pH 圖
+            gfPhChart = new Chart(phCtx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'pH（梗枋）',
+                        data: phData,
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 3
+                    }]
+                },
+                options: {
+                    responsive: false,
+                    scales: {
+                        y: { suggestedMin: 7.0, suggestedMax: 8.5 },
+                        x: { title: { display: true, text: '日期' } }
+                    },
+                    plugins: {
+                        legend: { display: true },
+                        tooltip: { enabled: true }
+                    }
+                }
+            });
+
+            // DO 圖
+            gfDoChart = new Chart(doCtx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'DO（梗枋，mg/L）',
+                        data: doData,
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 3
+                    }]
+                },
+                options: {
+                    responsive: false,
+                    scales: {
+                        y: { suggestedMin: 4.0, suggestedMax: 5.5 },
+                        x: { title: { display: true, text: '日期' } }
+                    },
+                    plugins: {
+                        legend: { display: true },
+                        tooltip: { enabled: true }
+                    }
+                }
+            });
+        }
+
+        // --- 烏石漁港：pH + DO 各一張圖 ---
+        function drawWushiChart() {
+            // pH 畫布
+            var phCanvas = document.getElementById('ws_ph_canvas');
+            if (!phCanvas) return;
+            var phCtx = phCanvas.getContext('2d');
+
+            // DO 畫布
+            var doCanvas = document.getElementById('ws_do_canvas');
+            if (!doCanvas) return;
+            var doCtx = doCanvas.getContext('2d');
+
+            // 先銷毀舊圖
+            if (wsPhChart !== null) {
+                wsPhChart.destroy();
+            }
+            if (wsDoChart !== null) {
+                wsDoChart.destroy();
+            }
+
+            var labels = [
+                '2025/01','2025/02','2025/03','2025/04','2025/05','2025/06',
+                '2025/07','2025/08','2025/09','2025/10','2025/11','2025/12'
+            ];
+
+            // pH 假資料（烏石）
+            var phData = [7.8, 7.9, 7.7, 7.6, 7.5, 7.4, 7.5, 7.6, 7.7, 7.8, 7.9, 7.8];
+
+            // DO 假資料（烏石，4.0–5.5 mg/L）
+            var doData = [5.1, 5.0, 4.8, 4.6, 4.4, 4.2, 4.3, 4.5, 4.7, 4.9, 5.2, 5.3];
+
+            // pH 圖
+            wsPhChart = new Chart(phCtx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'pH（烏石）',
+                        data: phData,
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 3
+                    }]
+                },
+                options: {
+                    responsive: false,
+                    scales: {
+                        y: { suggestedMin: 7.0, suggestedMax: 8.5 },
+                        x: { title: { display: true, text: '日期' } }
+                    },
+                    plugins: {
+                        legend: { display: true },
+                        tooltip: { enabled: true }
+                    }
+                }
+            });
+
+            // DO 圖
+            wsDoChart = new Chart(doCtx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'DO（烏石，mg/L）',
+                        data: doData,
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 3
+                    }]
+                },
+                options: {
+                    responsive: false,
+                    scales: {
+                        y: { suggestedMin: 4.0, suggestedMax: 5.5 },
+                        x: { title: { display: true, text: '日期' } }
+                    },
+                    plugins: {
+                        legend: { display: true },
+                        tooltip: { enabled: true }
+                    }
+                }
+            });
+        }
+    </script>
+</head>
+
+<body onload="InitMap();">
+    <div id="MapDiv"></div>
+</body>
+</html>
